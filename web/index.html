@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="flow-token" content="__FLOW_TOKEN__">
+  <title>Local Flow Studio</title><link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="rail">
+      <div class="brand"><span class="brandmark">◈</span><div><strong>LOCAL FLOW</strong><small>STUDIO</small></div></div>
+      <div class="rail-label">ARBEITSBEREICH</div>
+      <button class="nav active" data-view="editor"><span>⌁</span> Flow-Editor</button>
+      <button class="nav" data-view="runs"><span>▤</span> Läufe</button>
+      <button class="nav" data-view="connections"><span>⛓</span> Verbindungen</button>
+      <div class="rail-separator"></div>
+      <div class="rail-label">DEINE FLOWS <button id="newFlow" title="Neuer Flow">＋</button></div>
+      <div id="flowList" class="flow-list"></div>
+      <div class="rail-bottom"><span class="local-dot"></span> Nur auf diesem Rechner <small>127.0.0.1</small></div>
+    </aside>
+    <main>
+      <header class="topbar">
+        <div class="heading"><div class="eyebrow" id="breadcrumb">AUTOMATION / EDITOR</div><input id="flowName" aria-label="Flow-Name" value="Neuer Flow"><div class="subheading" id="subtitle">Baue deinen Ablauf mit Knoten und Verbindungen.</div></div>
+        <div class="top-actions"><label class="toggle"><input type="checkbox" id="enabled"><span class="toggle-track"></span><span>Aktiv</span></label><button class="button quiet" id="importBtn">Import</button><button class="button quiet" id="exportBtn">Export</button><button class="button quiet" id="deleteFlow" title="Aktuellen Flow löschen">Löschen</button><button class="button secondary" id="saveBtn">Speichern</button><button class="button primary" id="runBtn">▶ Flow starten</button></div>
+      </header>
+      <section id="editor" class="view active">
+        <div class="workspace">
+          <div class="palette"><div class="palette-head"><div class="eyebrow">BAUSTEINE</div><h2>Was soll passieren?</h2><p>Klicke einen Knoten an, um ihn auf der Fläche abzulegen.</p></div><div id="paletteItems"></div></div>
+          <div class="canvas-shell"><div class="canvas-toolbar"><span>FLOW-CANVAS</span><div><button id="templateBtn" class="text-button">✦ Vorlage laden</button><button id="fitBtn" class="text-button">◎ Zentrieren</button></div></div><div id="canvas" class="canvas"><svg id="wires" aria-hidden="true"></svg><div id="nodes"></div><div id="emptyCanvas" class="empty-canvas"><div class="empty-icon">⌁</div><h2>Dein Flow beginnt hier.</h2><p>Wähle links einen Startknoten und verbinde danach weitere Schritte.</p><button id="emptyAdd" class="button primary">＋ Start hinzufügen</button></div></div><div class="canvas-hint" id="canvasHint">Ausgang anklicken → Eingang anklicken · Knoten zum Verschieben ziehen</div></div>
+          <aside class="inspector" id="inspector"><div class="inspector-empty"><span>◎</span><h3>Ein Schritt nach dem anderen</h3><p>Wähle einen Knoten im Canvas, um seine Einstellungen zu bearbeiten.</p></div></aside>
+        </div>
+      </section>
+      <section id="runs" class="view page"><div class="page-intro"><div class="eyebrow">AUSFÜHRUNGEN</div><h2>Sieh, was dein Flow getan hat.</h2><p>Jeder Lauf zeigt seine Schritte, Ergebnisse und Fehler.</p></div><div id="runsList" class="runs-list"></div></section>
+      <section id="connections" class="view page"><div class="page-intro"><div class="eyebrow">INTEGRATIONEN</div><h2>Alles an einem Ort verbinden.</h2><p>Verbinde Modelle und GitHub hier im Browser. Zugangsdaten bleiben nur bis zum Neustart des Servers im Speicher.</p></div><div class="connections-grid" id="connectionCards"></div><div class="connection-panel"><h3>API-Schlüssel für diese Sitzung</h3><p>Beispiel: <code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, <code>MISTRAL_API_KEY</code> oder <code>GITHUB_TOKEN</code>. Der Flow speichert nur den Variablennamen.</p><div class="inline-form"><input id="secretName" placeholder="ANTHROPIC_API_KEY" aria-label="Variablenname" autocomplete="off"><input id="secretValue" placeholder="API-Schlüssel einfügen" aria-label="API-Schlüssel" type="password" autocomplete="off"><button class="button secondary" id="secretBtn">Verbinden</button></div><div id="secretList" class="tag-list"></div></div><div class="connection-panel"><h3>GitHub-Repository verbinden</h3><p>Klone ein Repository in den lokalen Projektordner. Für private Repositories verbinde zunächst <code>GITHUB_TOKEN</code>.</p><div class="inline-form"><input id="githubOwner" placeholder="GitHub-Nutzer oder Organisation" aria-label="GitHub-Nutzer"><span>/</span><input id="githubRepo" placeholder="Repository" aria-label="Repository"><button class="button secondary" id="cloneBtn">Verbinden</button></div><div id="repoList" class="tag-list"></div></div><div class="connection-panel"><h3>Laufende Docker-Container</h3><p>Trage den Containernamen im Docker-Knoten ein. Docker Desktop muss laufen.</p><div id="containerList" class="tag-list"></div></div></section>
+    </main>
+  </div>
+  <dialog id="runDialog"><form method="dialog"><div class="eyebrow">MANUELLER START</div><h2>Eingaben für diesen Lauf</h2><p>Optional: Übergib JSON an den Startknoten. Ohne Eingabe wird ein leeres Objekt verwendet.</p><textarea id="runPayload" rows="6" spellcheck="false">{}</textarea><div class="dialog-actions"><button class="button quiet" value="cancel">Abbrechen</button><button class="button primary" id="confirmRun" value="run">Jetzt starten</button></div></form></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
