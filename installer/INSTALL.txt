@@ -1,0 +1,17 @@
+FlowTool fuer Windows installieren
+================================
+
+1. Dieses ZIP vollstaendig entpacken.
+2. Install-FlowTool.cmd doppelklicken.
+3. FlowTool startet und oeffnet die grafische Oberflaeche im Standardbrowser.
+   Zum Schliessen "FlowTool beenden" in der Seitenleiste waehlen.
+
+Die Installation braucht keine Administratorrechte und kein separat installiertes
+Python. Eine Verknuepfung wird im Startmenue und auf dem Desktop angelegt.
+Flows liegen unter %LOCALAPPDATA%\FlowTool und bleiben bei einer Aktualisierung
+erhalten. Fuer Python-Skript-Knoten wird Python separat benoetigt; Git-, Docker-
+und JavaScript-Knoten brauchen ihre jeweiligen Programme.
+
+Zum Entfernen FlowTool schliessen, %LOCALAPPDATA%\Programs\FlowTool sowie die
+beiden Verknuepfungen loeschen. Eigene Flows koennen separat aus
+%LOCALAPPDATA%\FlowTool gesichert oder geloescht werden.

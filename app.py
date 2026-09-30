@@ -25,15 +25,37 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-DATA = ROOT / "data"
+DATA = (Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "FlowTool"
+        if os.name == "nt" and getattr(sys, "frozen", False) else ROOT / "data")
 DB = DATA / "flows.db"
 WEB = ROOT / "web"
 HOST = "127.0.0.1"
 PORT = 8765
+DESKTOP_MODE = False
 TOKEN = secrets.token_urlsafe(32)
 MAX_BODY = 2_000_000
 MAX_NODES = 200
 EXPR = re.compile(r"{{\s*([^{}]+?)\s*}}")
+NODE_TYPES = {"manual", "webhook", "schedule", "text", "set", "condition", "http", "llm", "script", "github", "docker", "delay", "output"}
+FLOW_DRAFT_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "name": {"type": "string"},
+        "notes": {"type": "string"},
+        "nodes": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"id": {"type": "string"}, "type": {"type": "string", "enum": sorted(NODE_TYPES)},
+                           "name": {"type": "string"}, "config_json": {"type": "string"}},
+            "required": ["id", "type", "name", "config_json"]}},
+        "edges": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"from": {"type": "string"}, "to": {"type": "string"},
+                           "branch": {"type": "string", "enum": ["true", "false"]}},
+            "required": ["from", "to", "branch"]}},
+    },
+    "required": ["name", "notes", "nodes", "edges"],
+}
+FLOW_ASSISTANT_INSTRUCTIONS = """Erstelle einen ausführbaren Entwurf für Local Flow Studio als JSON. Beginne mit genau einem Startknoten (normalerweise manual). Verwende nur unterstützte Typen: manual, webhook, schedule, text, set, condition, http, llm, script, github, docker, delay, output. Jeder Knoten erhält eine kurze eindeutige ID, einen verständlichen Namen und config_json als JSON-Objekt im String. Verbinde die Knoten zu einem gerichteten azyklischen Graphen. Verwende bei Bedingungs-Ausgängen branch true oder false, sonst true. Konfiguration: text {\"value\":\"...\"}; set {\"value\":\"{\\\"feld\\\":\\\"wert\\\"}\"}; condition {\"left\":\"{{input.feld}}\",\"operator\":\"equals\",\"right\":\"...\"}; http {\"url\":\"https://...\",\"method\":\"GET\"}; llm {\"provider\":\"openai\" oder \"anthropic\",\"prompt\":\"{{input.text}}\"}; output {}. Für fehlende Details nutze Platzhalter und erkläre sie in notes. Keine echten Geheimnisse in die Konfiguration schreiben. Erzeuge keine Ausführung; der Nutzer prüft den Entwurf vor dem Speichern und Starten."""
 
 
 def now():
@@ -81,8 +103,7 @@ def validate_flow(flow):
     ids = [n.get("id") for n in nodes if isinstance(n, dict)]
     if len(ids) != len(nodes) or len(ids) != len(set(ids)) or any(not isinstance(i, str) or not i for i in ids):
         raise ValueError("Knoten-IDs fehlen oder sind doppelt")
-    allowed = {"manual", "webhook", "schedule", "text", "set", "condition", "http", "llm", "script", "github", "docker", "delay", "output"}
-    if any(n.get("type") not in allowed or not isinstance(n.get("config", {}), dict) for n in nodes):
+    if any(n.get("type") not in NODE_TYPES or not isinstance(n.get("config", {}), dict) for n in nodes):
         raise ValueError("Unbekannter Knotentyp oder ungültige Konfiguration")
     for node in nodes:
         if node["type"] == "webhook" and not node.setdefault("config", {}).get("token"):
@@ -180,6 +201,82 @@ def http_request(url, method="GET", headers=None, body=None, timeout=20):
     except urllib.error.HTTPError as error:
         body = error.read(2000).decode("utf-8", "replace")
         raise RuntimeError(f"HTTP {error.code}: {body}") from error
+
+
+def generate_flow(description, provider, model=""):
+    description = str(description).strip()
+    if not 8 <= len(description) <= 4000:
+        raise ValueError("Beschreibe den Flow mit 8 bis 4000 Zeichen")
+    defaults = {"openai": ("OPENAI_API_KEY", "gpt-4o-mini"),
+                "anthropic": ("ANTHROPIC_API_KEY", "claude-sonnet-5")}
+    if provider not in defaults:
+        raise ValueError("Wähle ChatGPT oder Claude")
+    variable, default_model = defaults[provider]
+    key = os.getenv(variable, "")
+    if not key:
+        raise ValueError(f"{variable} fehlt. Setze den API-Schlüssel unter Verbindungen")
+    model = str(model or default_model).strip()
+    if not re.fullmatch(r"[A-Za-z0-9._:/-]{1,100}", model):
+        raise ValueError("Ungültige Modell-ID")
+
+    if provider == "openai":
+        payload = {"model": model, "instructions": FLOW_ASSISTANT_INSTRUCTIONS,
+                   "input": description,
+                   "text": {"format": {"type": "json_schema", "name": "flow_draft",
+                                       "strict": True, "schema": FLOW_DRAFT_SCHEMA}}}
+        result = http_request("https://api.openai.com/v1/responses", "POST",
+                              {"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+                              payload, 90)["body"]
+        if result.get("status") == "incomplete":
+            raise RuntimeError("ChatGPT hat den Entwurf nicht vollständig ausgegeben")
+        content = result.get("output_text") or "".join(
+            part.get("text", "") for item in result.get("output", []) if item.get("type") == "message"
+            for part in item.get("content", []) if part.get("type") == "output_text")
+    else:
+        payload = {"model": model, "max_tokens": 4096,
+                   "system": FLOW_ASSISTANT_INSTRUCTIONS,
+                   "messages": [{"role": "user", "content": description}],
+                   "output_config": {"format": {"type": "json_schema", "schema": FLOW_DRAFT_SCHEMA}}}
+        result = http_request("https://api.anthropic.com/v1/messages", "POST",
+                              {"x-api-key": key, "anthropic-version": "2023-06-01",
+                               "Content-Type": "application/json"}, payload, 90)["body"]
+        if result.get("stop_reason") == "max_tokens":
+            raise RuntimeError("Claude hat den Entwurf nicht vollständig ausgegeben")
+        content = "".join(part.get("text", "") for part in result.get("content", [])
+                          if part.get("type") == "text")
+    if not content:
+        raise RuntimeError("Das Modell hat keinen Flow-Entwurf zurückgegeben")
+    try:
+        draft = json.loads(content)
+    except ValueError as error:
+        raise ValueError("Der Modell-Entwurf enthält kein gültiges JSON") from error
+    if not isinstance(draft, dict) or not isinstance(draft.get("nodes"), list) or not isinstance(draft.get("edges"), list):
+        raise ValueError("Der Modell-Entwurf hat ein ungültiges Format")
+    if not 1 <= len(draft["nodes"]) <= 30 or len(draft["edges"]) > 60:
+        raise ValueError("Der Modell-Entwurf ist zu groß oder leer")
+    nodes = []
+    for index, raw in enumerate(draft["nodes"]):
+        if not isinstance(raw, dict) or not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", str(raw.get("id", ""))):
+            raise ValueError("Der Modell-Entwurf enthält eine ungültige Knoten-ID")
+        config_text = raw.get("config_json", "{}")
+        if not isinstance(config_text, str) or len(config_text) > 6000:
+            raise ValueError("Ungültige Knoten-Konfiguration")
+        try:
+            config = json.loads(config_text)
+        except ValueError as error:
+            raise ValueError("Ungültiges JSON in einer Knoten-Konfiguration") from error
+        if not isinstance(config, dict):
+            raise ValueError("Knoten-Konfiguration muss ein Objekt sein")
+        nodes.append({"id": raw["id"], "type": raw.get("type"),
+                      "name": str(raw.get("name") or raw["id"])[:80], "config": config,
+                      "x": 95 + (index % 4) * 250, "y": 180 + (index // 4) * 160})
+    if sum(node["type"] in ("manual", "webhook", "schedule") for node in nodes) != 1:
+        raise ValueError("Der Entwurf braucht genau einen Startknoten")
+    flow = {"id": None, "name": str(draft.get("name") or "KI-Entwurf")[:120],
+            "enabled": False, "nodes": nodes, "edges": draft["edges"]}
+    validate_flow(flow)
+    return {"flow": flow, "notes": str(draft.get("notes") or "")[:2000],
+            "provider": provider, "model": model}
 
 
 def git_command(args, cwd=None, timeout=60, github_auth=False):
@@ -297,7 +394,10 @@ def execute_node(node, value, context):
         code = str(cfg.get("code") or "output = input")
         if language == "python":
             wrapper = "import json,sys,contextlib\ninput=json.load(sys.stdin)\noutput=None\nwith contextlib.redirect_stdout(sys.stderr):\n exec(compile(" + repr(code) + ", '<flow-script>', 'exec'))\nprint(json.dumps(output, default=str))"
-            command = [sys.executable, "-I", "-c", wrapper]
+            interpreter = shutil.which("python") if getattr(sys, "frozen", False) else sys.executable
+            if not interpreter:
+                raise RuntimeError("Python-Skripte benötigen eine separate Python-Installation")
+            command = [interpreter, "-I", "-c", wrapper]
         elif language == "javascript":
             if not shutil.which("node"):
                 raise RuntimeError("Node.js ist nicht installiert")
@@ -305,7 +405,8 @@ def execute_node(node, value, context):
             command = ["node", "-e", wrapper]
         else:
             raise ValueError("Skriptsprache nicht unterstützt")
-        proc = subprocess.run(command, input=json.dumps(value), capture_output=True, text=True, timeout=min(float(cfg.get("timeout") or 30), 120), cwd=ROOT)
+        DATA.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.run(command, input=json.dumps(value), capture_output=True, text=True, timeout=min(float(cfg.get("timeout") or 30), 120), cwd=DATA)
         if proc.returncode:
             raise RuntimeError((proc.stderr or "Skriptfehler")[-2000:])
         return json.loads(proc.stdout or "null")
@@ -475,6 +576,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
         try:
+            if path == "/api/meta":
+                return self.reply(200, {"desktop_mode": DESKTOP_MODE})
             if path == "/api/flows":
                 return self.reply(200, list_flows())
             if path.startswith("/api/flows/"):
@@ -483,7 +586,7 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/runs/"):
                 return self.reply(200, runs_for(path.split("/")[3]))
             if path == "/api/connections":
-                return self.reply(200, {"git": bool(shutil.which("git")), "github_token": bool(os.getenv("GITHUB_TOKEN")), "docker": bool(shutil.which("docker")), "node": bool(shutil.which("node")), "python": sys.version.split()[0], "credentials": sorted(k for k in os.environ if (k.endswith("_KEY") or k.endswith("_TOKEN")) and k not in ("FLOW_TOKEN",))})
+                return self.reply(200, {"git": bool(shutil.which("git")), "github_token": bool(os.getenv("GITHUB_TOKEN")), "docker": bool(shutil.which("docker")), "node": bool(shutil.which("node")), "python": sys.version.split()[0], "python_scripts": bool(shutil.which("python")) if getattr(sys, "frozen", False) else True, "credentials": sorted(k for k in os.environ if (k.endswith("_KEY") or k.endswith("_TOKEN")) and k not in ("FLOW_TOKEN",))})
             if path == "/api/github/me":
                 key = os.getenv("GITHUB_TOKEN")
                 if not key:
@@ -525,8 +628,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(202, {"run_id": start_run(flow, "webhook", self.body(), trigger["id"])})
             if not self.secure():
                 return
+            if path == "/api/shutdown" and DESKTOP_MODE:
+                self.reply(200, {"stopping": True})
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
             if path == "/api/flows":
                 return self.reply(200, save_flow(self.body()))
+            if path == "/api/assistant/generate":
+                data = self.body()
+                return self.reply(200, generate_flow(data.get("description", ""), data.get("provider", ""), data.get("model", "")))
             if path == "/api/credentials":
                 data = self.body()
                 name, value = str(data.get("name", "")).strip(), str(data.get("value", ""))

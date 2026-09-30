@@ -100,6 +100,47 @@ class LocalFlowTests(unittest.TestCase):
         self.assertNotIn("Authorization", request.call_args.args[2])
         self.assertEqual(result["text"], "Lokal")
 
+    def assistant_draft(self):
+        return {"name": "Einfacher Entwurf", "notes": "Text noch anpassen", "nodes": [
+            {"id": "start", "type": "manual", "name": "Start", "config_json": "{}"},
+            {"id": "text", "type": "text", "name": "Text", "config_json": '{"value":"Hallo"}'},
+            {"id": "result", "type": "output", "name": "Ergebnis", "config_json": "{}"},
+        ], "edges": [{"from": "start", "to": "text", "branch": "true"},
+                     {"from": "text", "to": "result", "branch": "true"}]}
+
+    def test_assistant_openai_creates_unsaved_draft(self):
+        response = {"body": {"status": "completed", "output": [{"type": "message", "content": [
+            {"type": "output_text", "text": json.dumps(self.assistant_draft())}]}]}}
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), patch.object(app, "http_request", return_value=response) as request:
+            result = app.generate_flow("Erstelle einen einfachen Text-Flow", "openai")
+        url, method, headers, payload, timeout = request.call_args.args
+        self.assertEqual(url, "https://api.openai.com/v1/responses")
+        self.assertEqual(payload["text"]["format"]["type"], "json_schema")
+        self.assertEqual(result["flow"]["nodes"][1]["config"], {"value": "Hallo"})
+        self.assertFalse(result["flow"]["enabled"])
+        self.assertIsNone(result["flow"]["id"])
+        self.assertEqual(app.list_flows(), [])
+
+    def test_assistant_claude_and_invalid_draft(self):
+        response = {"body": {"stop_reason": "end_turn", "content": [
+            {"type": "text", "text": json.dumps(self.assistant_draft())}]}}
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), patch.object(app, "http_request", return_value=response) as request:
+            result = app.generate_flow("Erstelle einen einfachen Text-Flow", "anthropic")
+        self.assertEqual(request.call_args.args[0], "https://api.anthropic.com/v1/messages")
+        self.assertEqual(request.call_args.args[3]["output_config"]["format"]["type"], "json_schema")
+        self.assertEqual(result["flow"]["nodes"][0]["type"], "manual")
+        bad = self.assistant_draft()
+        bad["edges"].append({"from": "result", "to": "start", "branch": "true"})
+        response["body"]["content"][0]["text"] = json.dumps(bad)
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), patch.object(app, "http_request", return_value=response):
+            with self.assertRaisesRegex(ValueError, "Zyklische"):
+                app.generate_flow("Erstelle einen einfachen Text-Flow", "anthropic")
+
+    def test_assistant_requires_key(self):
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
+            with self.assertRaisesRegex(ValueError, "OPENAI_API_KEY"):
+                app.generate_flow("Erstelle einen einfachen Text-Flow", "openai")
+
     def test_api_security_and_webhook(self):
         flow = self.sample()
         flow["nodes"][0]["type"] = "webhook"
